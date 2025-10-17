@@ -212,7 +212,7 @@ print(f"✅ CORS Regex: {CORS_REGEX}")
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=CORS_REGEX,
-    allow_origins=CORS_STATIC,
+    allow_origins=["*"],  # TEMPORARY for testing — we’ll tighten this later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
