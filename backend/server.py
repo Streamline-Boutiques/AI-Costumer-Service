@@ -252,18 +252,21 @@ async def realtime_chat(websocket: WebSocket):
 
 app.include_router(api_router)
 
-# --- Smart CORS setup ---
-cors_origins_env = os.getenv("CORS_ORIGINS", "")
-allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+# --- Flexible CORS setup ---
+default_origins = [
+    "http://localhost:3000",
+    "https://localhost:3000",
+]
 
-if not allowed_origins:
-    allowed_origins = [
-        "http://localhost:3000",
-        "https://localhost:3000",
-    ]
+# Optional: static origins from env
+env_origins = os.getenv("CORS_ORIGINS", "")
+static_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
+allowed_origins = default_origins + static_origins
 
-# Regex to allow all preview deployments of your Vercel project
-cors_regex = r"https://ai-costumer-service-[a-z0-9]+-streamline-boutiques-projects\.vercel\.app"
+# Regex to match all Vercel preview and production subdomains
+cors_regex = (
+    r"https://ai-costumer-service(-[a-z0-9]+)?-streamline-boutiques-projects\.vercel\.app"
+)
 
 print(f"✅ Allowed static origins: {allowed_origins}")
 print(f"✅ Allowed regex: {cors_regex}")
@@ -277,9 +280,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+# Fallback manual middleware (handles OPTIONS preflight)
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+    if origin and (
+        origin in allowed_origins
+        or "ai-costumer-service-" in origin
+        and origin.endswith(".vercel.app")
+    ):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    if request.method == "OPTIONS":
+        response.status_code = 200
+    return response
