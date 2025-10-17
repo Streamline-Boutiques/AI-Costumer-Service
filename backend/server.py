@@ -247,55 +247,57 @@ async def realtime_chat(websocket: WebSocket):
     await websocket.close()
 
 # ========================================
-# App Setup and CORS
 # ========================================
+# App Setup and CORS (Final Fix)
+# ========================================
+
+from starlette.responses import JSONResponse, Response
 
 app.include_router(api_router)
 
-# --- Flexible CORS setup ---
-default_origins = [
+# Log the environment
+print("✅ Starting server with improved CORS handling")
+
+# Define allowed patterns
+CORS_BASE_REGEX = r"https://ai-costumer-service-[a-z0-9]+-streamline-boutiques-projects\.vercel\.app"
+CORS_STATIC = [
     "http://localhost:3000",
     "https://localhost:3000",
 ]
+print(f"✅ CORS Regex: {CORS_BASE_REGEX}")
 
-# Optional: static origins from env
-env_origins = os.getenv("CORS_ORIGINS", "")
-static_origins = [o.strip() for o in env_origins.split(",") if o.strip()]
-allowed_origins = default_origins + static_origins
-
-# Regex to match all Vercel preview and production subdomains
-cors_regex = (
-    r"https://ai-costumer-service(-[a-z0-9]+)?-streamline-boutiques-projects\.vercel\.app"
-)
-
-print(f"✅ Allowed static origins: {allowed_origins}")
-print(f"✅ Allowed regex: {cors_regex}")
-
+# Add default middleware (still needed for FastAPI auto-handling)
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=CORS_STATIC,
+    allow_origin_regex=CORS_BASE_REGEX,
     allow_credentials=True,
-    allow_origins=allowed_origins,
-    allow_origin_regex=cors_regex,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Fallback manual middleware (handles OPTIONS preflight)
+# Force CORS headers manually for Vercel proxy edge cases
 @app.middleware("http")
-async def add_cors_headers(request, call_next):
-    response = await call_next(request)
-    origin = request.headers.get("origin")
-
-    if origin and (
-        origin in allowed_origins
-        or "ai-costumer-service-" in origin
+async def ensure_cors_headers(request, call_next):
+    origin = request.headers.get("origin", "")
+    # Always allow matching frontend
+    is_allowed = (
+        origin.startswith("https://ai-costumer-service-")
         and origin.endswith(".vercel.app")
-    ):
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+    ) or origin in CORS_STATIC
 
+    # Handle preflight OPTIONS early
     if request.method == "OPTIONS":
-        response.status_code = 200
+        response = Response(status_code=200)
+    else:
+        response = await call_next(request)
+
+    if is_allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
+
+    # Log for debugging (will show up in Vercel logs)
+    print(f"🌐 Origin: {origin} -> {'ALLOWED' if is_allowed else 'BLOCKED'}")
     return response
