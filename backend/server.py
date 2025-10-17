@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket
+    from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -220,12 +220,13 @@ import json
 import os
 
 OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview"
+MAX_RETRIES = 3  # reconnect attempts
 
 @app.websocket("/realtime")
 async def realtime_chat(websocket: WebSocket):
     """
-    Full duplex WebSocket bridge between the browser and OpenAI Realtime API.
-    Supports both text and binary audio streams.
+    Realtime WebSocket bridge between the browser and OpenAI's Realtime API.
+    Supports text + binary streaming, and includes auto-reconnect handling.
     """
     await websocket.accept()
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -239,33 +240,55 @@ async def realtime_chat(websocket: WebSocket):
         "Authorization": f"Bearer {openai_key}",
         "OpenAI-Beta": "realtime=v1",
     }
-
     openai_url = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(openai_url, headers=headers) as openai_ws:
+    async def openai_bridge():
+        for attempt in range(MAX_RETRIES):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(openai_url, headers=headers) as openai_ws:
 
-                async def from_client():
-                    async for msg in websocket.iter_bytes():
-                        # handle binary messages (audio chunks)
-                        await openai_ws.send_bytes(msg)
-                    async for msg in websocket.iter_text():
-                        # handle JSON/text messages
-                        await openai_ws.send_str(msg)
+                        async def from_client():
+                            try:
+                                while True:
+                                    msg = await websocket.receive()
+                                    if msg["type"] == "websocket.disconnect":
+                                        await openai_ws.close()
+                                        break
+                                    if msg["type"] == "websocket.receive":
+                                        data = msg.get("bytes")
+                                        if data:
+                                            await openai_ws.send_bytes(data)
+                                        else:
+                                            text = msg.get("text")
+                                            if text:
+                                                await openai_ws.send_str(text)
+                            except Exception as e:
+                                print("Client connection closed:", e)
 
-                async def from_openai():
-                    async for msg in openai_ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            await websocket.send_text(msg.data)
-                        elif msg.type == aiohttp.WSMsgType.BINARY:
-                            await websocket.send_bytes(msg.data)
+                        async def from_openai():
+                            async for msg in openai_ws:
+                                if msg.type == aiohttp.WSMsgType.TEXT:
+                                    await websocket.send_text(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.BINARY:
+                                    await websocket.send_bytes(msg.data)
 
-                await asyncio.gather(from_client(), from_openai())
+                        await asyncio.gather(from_client(), from_openai())
 
-    except Exception as e:
-        await websocket.send_text(json.dumps({"error": str(e)}))
-        await websocket.close()
+                        # if we exit normally, break out of retry loop
+                        break  
+
+            except Exception as e:
+                print(f"[Realtime] Connection error (attempt {attempt+1}/{MAX_RETRIES}):", e)
+                await asyncio.sleep(2)  # backoff before retry
+
+        else:
+            await websocket.send_text(json.dumps({
+                "error": "Failed to connect to OpenAI Realtime API after multiple attempts."
+            }))
+            await websocket.close()
+
+    await openai_bridge()
 
 
 # ========================================
