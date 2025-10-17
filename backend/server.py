@@ -297,17 +297,24 @@ async def realtime_chat(websocket: WebSocket):
 
 app.include_router(api_router)
 
+# Handle CORS more explicitly for Vercel
+frontend_origin = os.environ.get("FRONTEND_URL") or os.environ.get("CORS_ORIGINS")
+
+if frontend_origin:
+    allowed_origins = [o.strip() for o in frontend_origin.split(",") if o.strip()]
+else:
+    # fallback for local testing
+    allowed_origins = [
+        "http://localhost:3000",
+        "https://localhost:3000",
+    ]
+
+print(f"✅ Allowed CORS origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
