@@ -326,6 +326,38 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from fastapi import WebSocket
+import websockets
+import json
+import asyncio
+
+@app.websocket("/realtime")
+async def realtime_chat(websocket: WebSocket):
+    await websocket.accept()
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if not openai_key:
+        await websocket.send_text(json.dumps({"error": "Missing OPENAI_API_KEY"}))
+        await websocket.close()
+        return
+
+    # Connect to OpenAI Realtime API
+    async with websockets.connect(
+        "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+        extra_headers={"Authorization": f"Bearer {openai_key}"}
+    ) as upstream:
+
+        async def client_to_openai():
+            async for message in websocket.iter_text():
+                await upstream.send(message)
+
+        async def openai_to_client():
+            async for message in upstream:
+                await websocket.send(message)
+
+        await asyncio.gather(client_to_openai(), openai_to_client())
+
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
