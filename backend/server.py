@@ -213,9 +213,20 @@ async def create_establishment(establishment_data: EstablishmentCreate, current_
 # Realtime OpenAI Chat (NEW)
 # ========================================
 
+from fastapi import WebSocket
+import aiohttp
+import asyncio
+import json
+import os
+
+OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview"
+
 @app.websocket("/realtime")
 async def realtime_chat(websocket: WebSocket):
-    """Relay between frontend and OpenAI Realtime API"""
+    """
+    Full duplex WebSocket bridge between the browser and OpenAI Realtime API.
+    Supports both text and binary audio streams.
+    """
     await websocket.accept()
     openai_key = os.getenv("OPENAI_API_KEY")
 
@@ -224,25 +235,38 @@ async def realtime_chat(websocket: WebSocket):
         await websocket.close()
         return
 
+    headers = {
+        "Authorization": f"Bearer {openai_key}",
+        "OpenAI-Beta": "realtime=v1",
+    }
+
+    openai_url = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
+
     try:
-        async with websockets.connect(
-            "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
-            extra_headers={"Authorization": f"Bearer {openai_key}"}
-        ) as upstream:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(openai_url, headers=headers) as openai_ws:
 
-            async def client_to_openai():
-                async for msg in websocket.iter_text():
-                    await upstream.send(msg)
+                async def from_client():
+                    async for msg in websocket.iter_bytes():
+                        # handle binary messages (audio chunks)
+                        await openai_ws.send_bytes(msg)
+                    async for msg in websocket.iter_text():
+                        # handle JSON/text messages
+                        await openai_ws.send_str(msg)
 
-            async def openai_to_client():
-                async for msg in upstream:
-                    await websocket.send(msg)
+                async def from_openai():
+                    async for msg in openai_ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            await websocket.send_text(msg.data)
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            await websocket.send_bytes(msg.data)
 
-            await asyncio.gather(client_to_openai(), openai_to_client())
+                await asyncio.gather(from_client(), from_openai())
 
     except Exception as e:
         await websocket.send_text(json.dumps({"error": str(e)}))
         await websocket.close()
+
 
 # ========================================
 # App Setup
